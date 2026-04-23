@@ -22,7 +22,7 @@
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.08);
       width: 100%;
-      max-width: 640px;
+      max-width: 620px;
       overflow: hidden;
     }
 
@@ -31,9 +31,20 @@
       color: #fff;
       padding: 28px 32px;
     }
-
     .card-header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.3px; }
     .card-header p  { margin-top: 6px; font-size: 0.9rem; opacity: 0.7; }
+
+    .badge {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 3px 10px;
+      background: #16a34a;
+      color: #fff;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
 
     .card-body { padding: 32px; }
 
@@ -41,9 +52,7 @@
     label { display: block; font-size: 0.85rem; font-weight: 600; color: #374151; margin-bottom: 6px; }
     label span { font-weight: 400; color: #9ca3af; margin-left: 4px; }
 
-    input[type="text"],
-    input[type="password"],
-    select {
+    input[type="text"], select {
       width: 100%;
       padding: 10px 14px;
       border: 1.5px solid #e5e7eb;
@@ -53,9 +62,7 @@
       outline: none;
       transition: border-color 0.15s;
     }
-    input[type="text"]:focus,
-    input[type="password"]:focus,
-    select:focus { border-color: #6366f1; }
+    input[type="text"]:focus, select:focus { border-color: #6366f1; }
 
     .upload-area {
       border: 2px dashed #d1d5db;
@@ -90,10 +97,9 @@
       transition: background 0.15s;
       margin-top: 4px;
     }
-    button[type="submit"]:hover  { background: #4338ca; }
+    button[type="submit"]:hover   { background: #4338ca; }
     button[type="submit"]:disabled { background: #a5b4fc; cursor: not-allowed; }
 
-    /* Progress panel */
     #progress-panel {
       display: none;
       margin-top: 28px;
@@ -101,7 +107,6 @@
       border-radius: 10px;
       overflow: hidden;
     }
-
     .progress-header {
       background: #f9fafb;
       padding: 12px 16px;
@@ -113,7 +118,6 @@
       align-items: center;
       gap: 8px;
     }
-
     .spinner {
       width: 14px; height: 14px;
       border: 2px solid #d1d5db;
@@ -134,11 +138,8 @@
       background: #fff;
       line-height: 1.7;
     }
+    #log-box .line-error { color: #dc2626; }
 
-    #log-box .line-log    { color: #374151; }
-    #log-box .line-error  { color: #dc2626; }
-
-    /* Results panel */
     #results-panel { display: none; margin-top: 20px; }
 
     .result-card {
@@ -182,16 +183,12 @@
 <div class="card">
   <div class="card-header">
     <h1>Newspaper Analyzer</h1>
-    <p>Upload a newspaper PDF and classify every text element using Claude Vision AI</p>
+    <p>Upload a newspaper PDF to classify headlines, subheadlines, body text and image captions</p>
+    <span class="badge">Free — no API key needed</span>
   </div>
 
   <div class="card-body">
     <form id="analyzeForm">
-
-      <div class="field">
-        <label>Anthropic API Key <span>(required)</span></label>
-        <input type="password" name="api_key" placeholder="sk-ant-..." autocomplete="off" />
-      </div>
 
       <div class="field">
         <label>Newspaper PDF</label>
@@ -222,7 +219,6 @@
       <button type="submit" id="submitBtn">Analyze Newspaper</button>
     </form>
 
-    <!-- Progress -->
     <div id="progress-panel">
       <div class="progress-header">
         <div class="spinner" id="spinner"></div>
@@ -231,13 +227,11 @@
       <div id="log-box"></div>
     </div>
 
-    <!-- Results -->
     <div id="results-panel"></div>
   </div>
 </div>
 
 <script>
-  // Drag-and-drop file name display
   const pdfInput = document.getElementById('pdfInput');
   const dropZone = document.getElementById('dropZone');
   const fileName = document.getElementById('file-name');
@@ -256,7 +250,6 @@
     }
   });
 
-  // Form submit
   document.getElementById('analyzeForm').addEventListener('submit', async e => {
     e.preventDefault();
     const form = e.target;
@@ -265,9 +258,7 @@
     const resultsPanel = document.getElementById('results-panel');
     const logBox = document.getElementById('log-box');
 
-    // Validate
     if (!form.pdf.files[0]) { alert('Please select a PDF file.'); return; }
-    if (!form.api_key.value.trim()) { alert('Please enter your Anthropic API key.'); return; }
 
     btn.disabled = true;
     btn.textContent = 'Uploading...';
@@ -294,12 +285,10 @@
 
     btn.textContent = 'Analyzing...';
 
-    // Listen to SSE stream
     const evtSource = new EventSource(`/stream/${jobId}`);
     evtSource.onmessage = e => {
       const event = JSON.parse(e.data);
       if (event.type === 'ping') return;
-
       if (event.type === 'log') {
         appendLog(event.message, 'line-log');
       } else if (event.type === 'done') {
@@ -354,10 +343,7 @@
   function showError(msg) {
     const panel = document.getElementById('results-panel');
     panel.style.display = 'block';
-    panel.innerHTML = `
-      <div class="error-card">
-        <strong>Error</strong>${msg}
-      </div>`;
+    panel.innerHTML = `<div class="error-card"><strong>Error</strong>${msg}</div>`;
     document.getElementById('spinner').style.display = 'none';
     document.getElementById('progress-title').textContent = 'Failed';
   }

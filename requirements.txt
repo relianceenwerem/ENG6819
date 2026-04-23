@@ -1,0 +1,4 @@
+anthropic
+pdf2image
+Pillow
+openpyxl

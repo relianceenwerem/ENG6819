@@ -13,48 +13,44 @@ import uuid
 
 from flask import Flask, render_template, request, send_from_directory, Response, jsonify
 
-from newspaper_analyzer import pdf_to_images, extract_metadata, analyze_page, export_results
+from newspaper_analyzer import (
+    pdf_to_images, extract_metadata, analyze_page,
+    export_results, parse_page_selection,
+)
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
 app.config["OUTPUT_FOLDER"] = os.path.join(os.path.dirname(__file__), "outputs")
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 
-# In-memory job store: job_id -> {"status": ..., "progress": [...], "done": bool, "error": str}
 jobs = {}
 
 
-def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str, api_key: str):
+def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str):
     """Run the full analysis in a background thread, posting progress updates."""
-    import anthropic
-
     q = jobs[job_id]["queue"]
 
     def log(msg):
         q.put({"type": "log", "message": msg})
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-
         log("Converting PDF to images...")
         images = pdf_to_images(pdf_path)
         log(f"Found {len(images)} page(s).")
 
-        from newspaper_analyzer import parse_page_selection
         page_indices = parse_page_selection(pages_arg, len(images))
-
         if not page_indices:
             raise ValueError("No valid pages selected.")
 
         log("Extracting newspaper name and date...")
-        metadata = extract_metadata(client, images[page_indices[0]])
+        metadata = extract_metadata(images[page_indices[0]])
         log(f"Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
 
         all_rows = []
         for idx in page_indices:
             page_num = idx + 1
             log(f"Analysing page {page_num} of {len(images)}...")
-            rows = analyze_page(client, images[idx], page_num, metadata)
+            rows = analyze_page(images[idx], page_num, metadata)
             all_rows.extend(rows)
             log(f"  → {len(rows)} element(s) found on page {page_num}.")
 
@@ -84,10 +80,6 @@ def index():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    api_key = request.form.get("api_key", "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "Anthropic API key is required."}), 400
-
     if "pdf" not in request.files or request.files["pdf"].filename == "":
         return jsonify({"error": "No PDF file uploaded."}), 400
 
@@ -109,7 +101,7 @@ def analyze():
 
     thread = threading.Thread(
         target=run_analysis,
-        args=(job_id, pdf_path, pages_arg, fmt, api_key),
+        args=(job_id, pdf_path, pages_arg, fmt),
         daemon=True,
     )
     thread.start()

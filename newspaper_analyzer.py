@@ -110,10 +110,9 @@ def _classify_blocks(blocks: list) -> list:
         elif h >= p50 and wc <= 60:
             category = "subheadline"
         elif wc <= 25 and h <= p25 and relative_top > 0.3:
-            # Short, small text in the lower portion of the page → likely a caption
             category = "image_caption"
         else:
-            category = "main_text"
+            continue  # skip main body text
 
         results.append((category, b["text"]))
 
@@ -156,7 +155,7 @@ def extract_metadata(image: Image.Image) -> dict:
 
 
 def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
-    """Classify all text elements on a single page. Returns list of row dicts."""
+    """Classify headline/subheadline/image_caption elements. Returns list of row dicts."""
     print(f"  Classifying text elements on page {page_num}...")
     blocks = _get_blocks(image)
     classified = _classify_blocks(blocks)
@@ -166,7 +165,6 @@ def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
         rows.append({
             "newspaper_name": metadata["newspaper_name"],
             "date": metadata["date"],
-            "page": page_num,
             "type": category,
             "text": text,
         })
@@ -175,7 +173,7 @@ def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
 
 
 def export_csv(rows: list, path: str) -> None:
-    fieldnames = ["newspaper_name", "date", "page", "type", "text"]
+    fieldnames = ["newspaper_name", "date", "type", "text"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -190,7 +188,7 @@ def export_xlsx(rows: list, path: str) -> None:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Newspaper Analysis"
-    headers = ["newspaper_name", "date", "page", "type", "text"]
+    headers = ["newspaper_name", "date", "type", "text"]
     ws.append(headers)
     for row in rows:
         ws.append([row[h] for h in headers])

@@ -88,31 +88,55 @@ def _get_blocks(image: Image.Image) -> list:
 
 def _classify_blocks(blocks: list) -> list:
     """
-    Assign a type to each block based on font-size heuristics.
-    Returns list of (type, text) tuples.
+    Classify blocks as headline, subheadline, or image_caption.
+
+    Strategy:
+    - Sort blocks top-to-bottom so we process the page in reading order.
+    - Use font height relative to the page maximum to identify large text.
+      * >= 60% of max height → headline
+      * >= 35% of max height → subheadline
+      * Any block immediately below a headline (within 1.5x headline height
+        gap) that is slightly smaller also qualifies as subheadline.
+    - Short blocks (≤20 words) with small font far down the page → image_caption.
+    - Everything else is skipped (body text).
     """
     if not blocks:
         return []
 
-    heights = [b["avg_height"] for b in blocks]
-    p75 = float(np.percentile(heights, 75))
-    p50 = float(np.percentile(heights, 50))
-    p25 = float(np.percentile(heights, 25))
+    max_h = max(b["avg_height"] for b in blocks)
+    if max_h == 0:
+        return []
+
+    # Process in top-to-bottom order
+    ordered = sorted(blocks, key=lambda b: b["top"])
 
     results = []
-    for b in blocks:
+    last_headline_bottom = -1
+    last_headline_height = 0
+
+    for b in ordered:
         h = b["avg_height"]
         wc = b["word_count"]
+        relative_h = h / max_h
         relative_top = b["top"] / b["page_h"] if b["page_h"] else 0
+        gap_from_last_headline = b["top"] - last_headline_bottom
 
-        if h >= p75 and wc <= 30:
+        if relative_h >= 0.60 and wc <= 40:
             category = "headline"
-        elif h >= p50 and wc <= 60:
+            last_headline_bottom = b["top"] + int(h)
+            last_headline_height = h
+        elif relative_h >= 0.35 and wc <= 60:
             category = "subheadline"
-        elif wc <= 25 and h <= p25 and relative_top > 0.3:
+        elif (last_headline_height > 0
+              and gap_from_last_headline <= last_headline_height * 1.5
+              and relative_h >= 0.25
+              and wc <= 60):
+            # Directly below a headline → treat as subheadline even if font is smaller
+            category = "subheadline"
+        elif wc <= 20 and relative_h < 0.35 and relative_top > 0.25:
             category = "image_caption"
         else:
-            continue  # skip main body text
+            continue  # skip body text
 
         results.append((category, b["text"]))
 

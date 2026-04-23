@@ -1,5 +1,6 @@
-anthropic
 pdf2image
 Pillow
+pytesseract
+numpy
 openpyxl
 flask

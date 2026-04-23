@@ -151,5 +151,6 @@ def download(job_id, filename):
 if __name__ == "__main__":
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
-    print("Starting Newspaper Analyzer at http://localhost:5000")
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Newspaper Analyzer at http://localhost:{port}")
+    app.run(debug=False, host="0.0.0.0", port=port)

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Newspaper Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      width: 100%;
+      max-width: 640px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 28px 32px;
+    }
+
+    .card-header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.3px; }
+    .card-header p  { margin-top: 6px; font-size: 0.9rem; opacity: 0.7; }
+
+    .card-body { padding: 32px; }
+
+    .field { margin-bottom: 22px; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    label span { font-weight: 400; color: #9ca3af; margin-left: 4px; }
+
+    input[type="text"],
+    input[type="password"],
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      color: #111827;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    select:focus { border-color: #6366f1; }
+
+    .upload-area {
+      border: 2px dashed #d1d5db;
+      border-radius: 10px;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      position: relative;
+    }
+    .upload-area:hover, .upload-area.drag { border-color: #6366f1; background: #f5f3ff; }
+    .upload-area input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .upload-icon { font-size: 2.2rem; margin-bottom: 8px; }
+    .upload-area p  { color: #6b7280; font-size: 0.9rem; }
+    .upload-area strong { color: #4f46e5; }
+    #file-name { margin-top: 8px; font-size: 0.85rem; color: #4f46e5; font-weight: 600; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    button[type="submit"] {
+      width: 100%;
+      padding: 13px;
+      background: #4f46e5;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-top: 4px;
+    }
+    button[type="submit"]:hover  { background: #4338ca; }
+    button[type="submit"]:disabled { background: #a5b4fc; cursor: not-allowed; }
+
+    /* Progress panel */
+    #progress-panel {
+      display: none;
+      margin-top: 28px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .progress-header {
+      background: #f9fafb;
+      padding: 12px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #374151;
+      border-bottom: 1.5px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid #d1d5db;
+      border-top-color: #4f46e5;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #log-box {
+      padding: 14px 16px;
+      font-family: monospace;
+      font-size: 0.82rem;
+      color: #374151;
+      max-height: 220px;
+      overflow-y: auto;
+      background: #fff;
+      line-height: 1.7;
+    }
+
+    #log-box .line-log    { color: #374151; }
+    #log-box .line-error  { color: #dc2626; }
+
+    /* Results panel */
+    #results-panel { display: none; margin-top: 20px; }
+
+    .result-card {
+      background: #f0fdf4;
+      border: 1.5px solid #bbf7d0;
+      border-radius: 10px;
+      padding: 20px 22px;
+    }
+    .result-card h3 { color: #15803d; font-size: 1rem; margin-bottom: 10px; }
+    .result-meta { font-size: 0.85rem; color: #374151; margin-bottom: 14px; line-height: 1.8; }
+    .result-meta span { font-weight: 600; color: #111827; }
+
+    .download-links { display: flex; gap: 10px; flex-wrap: wrap; }
+    .dl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      background: #16a34a;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 7px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+    .dl-btn:hover { background: #15803d; }
+
+    .error-card {
+      background: #fef2f2;
+      border: 1.5px solid #fecaca;
+      border-radius: 10px;
+      padding: 18px 20px;
+      color: #b91c1c;
+      font-size: 0.9rem;
+    }
+    .error-card strong { display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="card-header">
+    <h1>Newspaper Analyzer</h1>
+    <p>Upload a newspaper PDF and classify every text element using Claude Vision AI</p>
+  </div>
+
+  <div class="card-body">
+    <form id="analyzeForm">
+
+      <div class="field">
+        <label>Anthropic API Key <span>(required)</span></label>
+        <input type="password" name="api_key" placeholder="sk-ant-..." autocomplete="off" />
+      </div>
+
+      <div class="field">
+        <label>Newspaper PDF</label>
+        <div class="upload-area" id="dropZone">
+          <input type="file" name="pdf" accept=".pdf" id="pdfInput" />
+          <div class="upload-icon">📰</div>
+          <p><strong>Click to upload</strong> or drag and drop</p>
+          <p>PDF files only · Max 100 MB</p>
+          <div id="file-name"></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label>Pages <span>(optional)</span></label>
+          <input type="text" name="pages" placeholder="e.g. 1,2,3 (default: all)" />
+        </div>
+        <div class="field">
+          <label>Export Format</label>
+          <select name="format">
+            <option value="both">CSV + Excel (.xlsx)</option>
+            <option value="csv">CSV only</option>
+            <option value="xlsx">Excel only</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn">Analyze Newspaper</button>
+    </form>
+
+    <!-- Progress -->
+    <div id="progress-panel">
+      <div class="progress-header">
+        <div class="spinner" id="spinner"></div>
+        <span id="progress-title">Analyzing...</span>
+      </div>
+      <div id="log-box"></div>
+    </div>
+
+    <!-- Results -->
+    <div id="results-panel"></div>
+  </div>
+</div>
+
+<script>
+  // Drag-and-drop file name display
+  const pdfInput = document.getElementById('pdfInput');
+  const dropZone = document.getElementById('dropZone');
+  const fileName = document.getElementById('file-name');
+
+  pdfInput.addEventListener('change', () => {
+    fileName.textContent = pdfInput.files[0]?.name || '';
+  });
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag');
+    if (e.dataTransfer.files[0]) {
+      pdfInput.files = e.dataTransfer.files;
+      fileName.textContent = e.dataTransfer.files[0].name;
+    }
+  });
+
+  // Form submit
+  document.getElementById('analyzeForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const btn = document.getElementById('submitBtn');
+    const progressPanel = document.getElementById('progress-panel');
+    const resultsPanel = document.getElementById('results-panel');
+    const logBox = document.getElementById('log-box');
+
+    // Validate
+    if (!form.pdf.files[0]) { alert('Please select a PDF file.'); return; }
+    if (!form.api_key.value.trim()) { alert('Please enter your Anthropic API key.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    logBox.innerHTML = '';
+    progressPanel.style.display = 'block';
+    resultsPanel.style.display = 'none';
+    document.getElementById('progress-title').textContent = 'Analyzing...';
+    document.getElementById('spinner').style.display = 'block';
+
+    const formData = new FormData(form);
+    let jobId;
+
+    try {
+      const res = await fetch('/analyze', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      jobId = data.job_id;
+    } catch (err) {
+      showError(err.message);
+      btn.disabled = false;
+      btn.textContent = 'Analyze Newspaper';
+      return;
+    }
+
+    btn.textContent = 'Analyzing...';
+
+    // Listen to SSE stream
+    const evtSource = new EventSource(`/stream/${jobId}`);
+    evtSource.onmessage = e => {
+      const event = JSON.parse(e.data);
+      if (event.type === 'ping') return;
+
+      if (event.type === 'log') {
+        appendLog(event.message, 'line-log');
+      } else if (event.type === 'done') {
+        evtSource.close();
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('progress-title').textContent = 'Complete';
+        showResults(event);
+        btn.disabled = false;
+        btn.textContent = 'Analyze Another';
+      } else if (event.type === 'error') {
+        evtSource.close();
+        showError(event.message);
+        btn.disabled = false;
+        btn.textContent = 'Analyze Newspaper';
+      }
+    };
+    evtSource.onerror = () => {
+      evtSource.close();
+      showError('Connection lost. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Analyze Newspaper';
+    };
+  });
+
+  function appendLog(msg, cls) {
+    const logBox = document.getElementById('log-box');
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = '› ' + msg;
+    logBox.appendChild(div);
+    logBox.scrollTop = logBox.scrollHeight;
+  }
+
+  function showResults(event) {
+    const panel = document.getElementById('results-panel');
+    const links = event.files.map(f =>
+      `<a class="dl-btn" href="${f.url}" download>⬇ ${f.name}</a>`
+    ).join('');
+    panel.style.display = 'block';
+    panel.innerHTML = `
+      <div class="result-card">
+        <h3>✅ Analysis Complete</h3>
+        <div class="result-meta">
+          <div>Newspaper: <span>${event.newspaper}</span></div>
+          <div>Date: <span>${event.date}</span></div>
+          <div>Total elements: <span>${event.total}</span></div>
+        </div>
+        <div class="download-links">${links}</div>
+      </div>`;
+  }
+
+  function showError(msg) {
+    const panel = document.getElementById('results-panel');
+    panel.style.display = 'block';
+    panel.innerHTML = `
+      <div class="error-card">
+        <strong>Error</strong>${msg}
+      </div>`;
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('progress-title').textContent = 'Failed';
+  }
+</script>
+</body>
+</html>

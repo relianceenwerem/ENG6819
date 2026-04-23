@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: newspaper-analyzer
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false

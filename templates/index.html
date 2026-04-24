@@ -22,7 +22,7 @@
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.08);
       width: 100%;
-      max-width: 620px;
+      max-width: 900px;
       overflow: hidden;
     }
 
@@ -149,24 +149,123 @@
       padding: 20px 22px;
     }
     .result-card h3 { color: #15803d; font-size: 1rem; margin-bottom: 10px; }
-    .result-meta { font-size: 0.85rem; color: #374151; margin-bottom: 14px; line-height: 1.8; }
+    .result-meta { font-size: 0.85rem; color: #374151; line-height: 1.8; }
     .result-meta span { font-weight: 600; color: #111827; }
 
-    .download-links { display: flex; gap: 10px; flex-wrap: wrap; }
+    /* Selection table */
+    .table-section {
+      margin-top: 16px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .table-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: #f9fafb;
+      border-bottom: 1.5px solid #e5e7eb;
+      flex-wrap: wrap;
+    }
+
+    .select-all-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .sel-count {
+      font-size: 0.82rem;
+      color: #6b7280;
+      flex: 1;
+    }
+
+    .dl-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+
     .dl-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 9px 18px;
+      gap: 5px;
+      padding: 7px 14px;
       background: #16a34a;
       color: #fff;
-      text-decoration: none;
+      border: none;
       border-radius: 7px;
-      font-size: 0.88rem;
+      font-size: 0.83rem;
       font-weight: 600;
+      cursor: pointer;
       transition: background 0.15s;
     }
     .dl-btn:hover { background: #15803d; }
+    .dl-btn:disabled { background: #86efac; cursor: not-allowed; }
+
+    .table-wrap {
+      overflow-x: auto;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.81rem;
+    }
+
+    .results-table th {
+      position: sticky;
+      top: 0;
+      background: #f3f4f6;
+      padding: 8px 10px;
+      text-align: left;
+      font-weight: 600;
+      color: #374151;
+      white-space: nowrap;
+      border-bottom: 1.5px solid #e5e7eb;
+      z-index: 1;
+    }
+
+    .results-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #f3f4f6;
+      vertical-align: top;
+      color: #111827;
+    }
+
+    .results-table tr:last-child td { border-bottom: none; }
+    .results-table tr:hover td { background: #f9fafb; }
+    .results-table tr.row-selected td { background: #eff6ff; }
+
+    .td-text { max-width: 260px; word-wrap: break-word; }
+    .td-center { text-align: center; }
+    .td-meta { color: #6b7280; max-width: 140px; word-wrap: break-word; }
+
+    .badge-hl {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #dbeafe;
+      color: #1d4ed8;
+      border-radius: 12px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-sub {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #fce7f3;
+      color: #9d174d;
+      border-radius: 12px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
 
     .error-card {
       background: #fef2f2;
@@ -182,8 +281,8 @@
 <body>
 <div class="card">
   <div class="card-header">
-    <h1>Riley's Newspaper Analyzer</h1>
-    <p>Upload a newspaper PDF to classify headlines, subheadlines, body text, and image captions</p>
+    <h1>Newspaper Analyzer</h1>
+    <p>Upload a newspaper PDF to classify headlines, subheadlines, body text and image captions</p>
     <span class="badge">Powered by Claude Vision</span>
   </div>
 
@@ -235,6 +334,8 @@
   const pdfInput = document.getElementById('pdfInput');
   const dropZone = document.getElementById('dropZone');
   const fileName = document.getElementById('file-name');
+
+  let currentJobId = null;
 
   function showFileNames(files) {
     if (!files || files.length === 0) { fileName.textContent = ''; return; }
@@ -329,30 +430,149 @@
     logBox.scrollTop = logBox.scrollHeight;
   }
 
+  function escHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function showResults(event) {
+    currentJobId = event.job_id;
+    const rows = event.rows || [];
     const panel = document.getElementById('results-panel');
-    const links = event.files.map(f =>
-      `<a class="dl-btn" href="${f.url}" download>⬇ ${f.name}</a>`
-    ).join('');
     panel.style.display = 'block';
-    panel.innerHTML = `
+
+    let html = `
       <div class="result-card">
         <h3>✅ Analysis Complete</h3>
         <div class="result-meta">
-          <div>Newspaper: <span>${event.newspaper}</span></div>
-          <div>Files processed: <span>${event.date}</span></div>
+          <div>Newspaper: <span>${escHtml(event.newspaper)}</span></div>
+          <div>Files processed: <span>${escHtml(event.date)}</span></div>
           <div>Total elements: <span>${event.total}</span></div>
-          <div>API cost: <span>${event.cost}</span></div>
-          <div>Tokens used: <span>${event.tokens}</span></div>
+          <div>API cost: <span>${escHtml(event.cost)}</span></div>
+          <div>Tokens used: <span>${escHtml(event.tokens)}</span></div>
         </div>
-        <div class="download-links">${links}</div>
       </div>`;
+
+    if (rows.length > 0) {
+      html += `
+      <div class="table-section">
+        <div class="table-controls">
+          <label class="select-all-label">
+            <input type="checkbox" id="selectAll" onchange="toggleAll(this)" checked>
+            Select all
+          </label>
+          <span class="sel-count" id="selCount">${rows.length} of ${rows.length} selected</span>
+          <div class="dl-btns">
+            <button class="dl-btn" onclick="downloadSelected('csv')">⬇ Download CSV</button>
+            <button class="dl-btn" onclick="downloadSelected('xlsx')">⬇ Download Excel</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Type</th>
+                <th>Text</th>
+                <th>Newspaper</th>
+                <th>Date</th>
+                <th>Has #</th>
+                <th>Names</th>
+                <th>Locations</th>
+                <th>Image</th>
+              </tr>
+            </thead>
+            <tbody>`;
+
+      rows.forEach((row, i) => {
+        const badge = row.content_type === 'headline'
+          ? `<span class="badge-hl">Headline</span>`
+          : `<span class="badge-sub">Subheadline</span>`;
+        html += `
+              <tr class="row-selected" data-index="${i}">
+                <td><input type="checkbox" class="row-check" data-index="${i}" checked onchange="onRowCheck(this)"></td>
+                <td>${badge}</td>
+                <td class="td-text">${escHtml(row.text)}</td>
+                <td class="td-meta">${escHtml(row.newspaper_name)}</td>
+                <td class="td-meta">${escHtml(row.date)}</td>
+                <td class="td-center">${escHtml(row.contains_number)}</td>
+                <td class="td-meta">${escHtml(row.name_mentioned) || '—'}</td>
+                <td class="td-meta">${escHtml(row.location_mentioned) || '—'}</td>
+                <td class="td-center">${escHtml(row.image_detected)}</td>
+              </tr>`;
+      });
+
+      html += `
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    panel.innerHTML = html;
+  }
+
+  function onRowCheck(cb) {
+    const tr = cb.closest('tr');
+    tr.classList.toggle('row-selected', cb.checked);
+    updateCount();
+  }
+
+  function toggleAll(cb) {
+    document.querySelectorAll('.row-check').forEach(c => {
+      c.checked = cb.checked;
+      c.closest('tr').classList.toggle('row-selected', cb.checked);
+    });
+    updateCount();
+  }
+
+  function updateCount() {
+    const checked = document.querySelectorAll('.row-check:checked').length;
+    const total   = document.querySelectorAll('.row-check').length;
+    const el = document.getElementById('selCount');
+    if (el) el.textContent = `${checked} of ${total} selected`;
+    const sa = document.getElementById('selectAll');
+    if (sa) {
+      sa.checked = checked === total;
+      sa.indeterminate = checked > 0 && checked < total;
+    }
+  }
+
+  async function downloadSelected(fmt) {
+    const indices = [...document.querySelectorAll('.row-check:checked')]
+      .map(cb => parseInt(cb.dataset.index));
+    if (indices.length === 0) {
+      alert('Please select at least one row to download.');
+      return;
+    }
+    try {
+      const res = await fetch('/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: currentJobId, indices, format: fmt }),
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      data.files.forEach(f => {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      });
+    } catch (err) {
+      alert('Download failed: ' + err.message);
+    }
   }
 
   function showError(msg) {
     const panel = document.getElementById('results-panel');
     panel.style.display = 'block';
-    panel.innerHTML = `<div class="error-card"><strong>Error</strong>${msg}</div>`;
+    panel.innerHTML = `<div class="error-card"><strong>Error</strong>${escHtml(msg)}</div>`;
     document.getElementById('spinner').style.display = 'none';
     document.getElementById('progress-title').textContent = 'Failed';
   }

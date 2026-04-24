@@ -16,7 +16,7 @@ import anthropic
 from flask import Flask, render_template, request, send_from_directory, Response, jsonify
 
 from newspaper_analyzer import (
-    pdf_to_images, analyze_page, export_results, parse_page_selection,
+    pdf_to_images, analyze_page, export_results, parse_page_selection, FIELDNAMES,
 )
 
 app = Flask(__name__)
@@ -88,13 +88,16 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
         if fmt in ("xlsx", "both") and os.path.exists(output_base + ".xlsx"):
             files.append({"name": "results.xlsx", "url": f"/download/{job_id}/results.xlsx"})
 
+        jobs[job_id]["rows"] = all_rows
+
         summary = ", ".join(dict.fromkeys(newspapers_seen)) or "Unknown"
         log(f"Done! {len(all_rows)} total elements from {len(pdf_entries)} file(s). "
             f"Total cost: ${total_cost:.4f} ({total_in_tokens} in / {total_out_tokens} out tokens)")
         q.put({"type": "done", "files": files, "total": len(all_rows),
                "newspaper": summary, "date": f"{len(pdf_entries)} file(s) processed",
                "cost": f"${total_cost:.4f}",
-               "tokens": f"{total_in_tokens:,} in / {total_out_tokens:,} out"})
+               "tokens": f"{total_in_tokens:,} in / {total_out_tokens:,} out",
+               "job_id": job_id, "rows": all_rows})
 
     except Exception as exc:
         q.put({"type": "error", "message": str(exc)})
@@ -165,6 +168,36 @@ def stream(job_id):
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/export", methods=["POST"])
+def export_filtered():
+    data = request.get_json()
+    job_id  = data.get("job_id", "")
+    indices = data.get("indices", [])
+    fmt     = data.get("format", "csv")
+
+    if job_id not in jobs or "rows" not in jobs[job_id]:
+        return jsonify({"error": "Job not found or results have expired."}), 404
+
+    all_rows = jobs[job_id]["rows"]
+    selected = [all_rows[i] for i in indices
+                if isinstance(i, int) and 0 <= i < len(all_rows)]
+
+    if not selected:
+        return jsonify({"error": "No rows selected."}), 400
+
+    export_id   = f"{job_id}_sel"
+    output_base = os.path.join(app.config["OUTPUT_FOLDER"], export_id)
+    export_results(selected, output_base, fmt)
+
+    files = []
+    if fmt == "csv" and os.path.exists(output_base + ".csv"):
+        files.append({"name": "results.csv", "url": f"/download/{export_id}/results.csv"})
+    if fmt == "xlsx" and os.path.exists(output_base + ".xlsx"):
+        files.append({"name": "results.xlsx", "url": f"/download/{export_id}/results.xlsx"})
+
+    return jsonify({"files": files})
 
 
 @app.route("/download/<job_id>/<filename>")

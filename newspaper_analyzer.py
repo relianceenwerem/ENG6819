@@ -245,7 +245,7 @@ def _classify_blocks(blocks: list) -> list:
 # Page analysis
 # ---------------------------------------------------------------------------
 
-def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
+def analyze_page(image: Image.Image, page_num: int, metadata: dict, filename: str = "") -> list:
     print(f"  Classifying page {page_num}...")
     blocks     = _get_blocks(image)
     classified = _classify_blocks(blocks)
@@ -253,6 +253,7 @@ def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
     rows = []
     for category, text in classified:
         rows.append({
+            "filename":       filename,
             "newspaper_name": metadata["newspaper_name"],
             "date":           metadata["date"],
             "type":           category,
@@ -267,7 +268,7 @@ def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
 # ---------------------------------------------------------------------------
 
 def export_csv(rows: list, path: str) -> None:
-    fieldnames = ["newspaper_name", "date", "type", "text"]
+    fieldnames = ["filename", "newspaper_name", "date", "type", "text"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -346,9 +347,10 @@ def main():
     if not page_indices:
         sys.exit("No valid pages to analyze.")
 
+    filename = os.path.splitext(os.path.basename(args.pdf))[0]
     all_rows = []
     for idx in page_indices:
-        rows = analyze_page(images[idx], idx + 1, metadata)
+        rows = analyze_page(images[idx], idx + 1, metadata, filename)
         all_rows.extend(rows)
 
     print(f"\nTotal elements extracted: {len(all_rows)}")

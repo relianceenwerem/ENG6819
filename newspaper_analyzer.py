@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-Newspaper Analyzer — reads a PDF newspaper and classifies text elements
-(headline, subheadline, main_text, image_caption) using Tesseract OCR.
-Extracts newspaper name and publication date. Exports as CSV and/or Excel.
-Free — no API key required.
+Newspaper Analyzer — reads newspapers.com PDF clippings and extracts:
+  - newspaper name and publication date (from the top metadata strip)
+  - headlines, subheadlines, and image captions (via Tesseract OCR)
+Exports results as CSV and/or Excel. Free — no API key required.
 """
 
 import argparse
 import csv
 import os
+import re
+import subprocess
 import sys
+from collections import defaultdict
 
 import numpy as np
 import pytesseract
 from pdf2image import convert_from_path
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 
 try:
     import openpyxl
@@ -22,83 +25,161 @@ try:
 except ImportError:
     XLSX_AVAILABLE = False
 
+# newspapers.com overlay heights at 200 DPI (pixels to skip)
+TOP_STRIP_PX    = 160
+BOTTOM_STRIP_PX = 300
+
+# Overlay text patterns to discard from OCR output
+OVERLAY_PATTERNS = re.compile(
+    r"(newspapers?\.com|copyright|downloaded\s+on|clipped\s+by|all\s+rights\s+reserved"
+    r"|https?://|www\.|cvd_\d+)",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Metadata extraction — uses pdftotext (reliable on the vector overlay layer)
+# ---------------------------------------------------------------------------
+
+def extract_metadata_from_pdf(pdf_path: str) -> dict:
+    """
+    Pull newspaper name and date from the newspapers.com metadata strip
+    embedded as a vector text layer in the PDF.
+    """
+    try:
+        result = subprocess.run(
+            ["pdftotext", pdf_path, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        text = result.stdout
+    except Exception:
+        return {"newspaper_name": "Unknown", "date": "Unknown"}
+
+    # The newspapers.com format puts the title on its own line:
+    # "Chicago Tribune (Chicago, Illinois) · Sun, Mar 29, 2020 · Page 1-29"
+    name, date = "Unknown", "Unknown"
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(
+            r"^((?:The\s+)?[A-Z][A-Za-z\s,()\']+?)\s*·\s*"
+            r"(\w+,\s+\w+\s+\d{1,2},\s+\d{4})",
+            line,
+        )
+        if m and "newspapers.com" not in m.group(1).lower():
+            name = m.group(1).strip()
+            date = m.group(2).strip()
+            break
+
+    return {"newspaper_name": name, "date": date}
+
+
+# ---------------------------------------------------------------------------
+# OCR helpers
+# ---------------------------------------------------------------------------
 
 def pdf_to_images(pdf_path: str) -> list:
     print(f"Converting PDF to images: {pdf_path}")
-    images = convert_from_path(pdf_path, dpi=200)
+    images = convert_from_path(pdf_path, dpi=300)
     print(f"  {len(images)} page(s) found.")
     return images
 
 
+def _preprocess(image: Image.Image) -> Image.Image:
+    """Crop overlay strips then enhance contrast for Tesseract."""
+    W, H = image.width, image.height
+    # Scale strip sizes from 200 DPI baseline to actual DPI (300 DPI → 1.5×)
+    scale = H / 2200
+    top    = int(TOP_STRIP_PX    * scale * 1.5)
+    bottom = int(BOTTOM_STRIP_PX * scale * 1.5)
+    cropped = image.crop((0, top, W, H - bottom))
+    gray = cropped.convert("L")
+    sharpened = gray.filter(ImageFilter.SHARPEN)
+    return ImageEnhance.Contrast(sharpened).enhance(2.0)
+
+
 def _get_blocks(image: Image.Image) -> list:
     """
-    Run Tesseract and return a list of text blocks.
-    Each block: {"text": str, "avg_height": float, "word_count": int,
-                  "top": int, "left": int, "page_h": int}
+    Run Tesseract on the preprocessed image and group words into
+    paragraph-level blocks.
+
+    Returns list of dicts:
+      text, avg_height, word_count, top, page_h
     """
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    page_h = image.height
+    processed = _preprocess(image)
+    page_h = processed.height
+
+    data = pytesseract.image_to_data(
+        processed, config="--oem 1 --psm 3",
+        output_type=pytesseract.Output.DICT,
+    )
 
     # Group words into lines keyed by (block_num, par_num, line_num)
-    lines: dict = {}
+    lines: dict = defaultdict(list)
     for i, level in enumerate(data["level"]):
-        if level != 5:  # word level
+        if level != 5:
             continue
         text = data["text"][i].strip()
-        if not text or data["conf"][i] < 10:
+        if not text or data["conf"][i] < 15:
             continue
         key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-        lines.setdefault(key, []).append({
-            "text": text,
+        lines[key].append({
+            "text":   text,
             "height": data["height"][i],
-            "top": data["top"][i],
-            "left": data["left"][i],
+            "top":    data["top"][i],
+            "left":   data["left"][i],
         })
 
-    # Group lines into paragraphs (same block_num + par_num)
-    paras: dict = {}
+    # Group lines into paragraphs
+    paras: dict = defaultdict(list)
     for (bn, pn, ln), words in lines.items():
-        key = (bn, pn)
-        paras.setdefault(key, []).append({
-            "text": " ".join(w["text"] for w in words),
+        paras[(bn, pn)].append({
+            "text":       " ".join(w["text"] for w in words),
             "avg_height": float(np.mean([w["height"] for w in words])),
-            "top": min(w["top"] for w in words),
-            "left": min(w["left"] for w in words),
+            "top":        min(w["top"] for w in words),
         })
 
     blocks = []
-    for (bn, pn), para_lines in paras.items():
+    for para_lines in paras.values():
         full_text = " ".join(l["text"] for l in para_lines).strip()
         if not full_text:
             continue
+        # Skip newspapers.com overlay text that leaked through
+        if OVERLAY_PATTERNS.search(full_text):
+            continue
+        # Skip garbled OCR: require at least 60% alphabetic characters
+        # and at least 3 characters total
+        if len(full_text) < 3:
+            continue
+        alpha_ratio = sum(c.isalpha() for c in full_text) / len(full_text)
+        if alpha_ratio < 0.60:
+            continue
         avg_h = float(np.mean([l["avg_height"] for l in para_lines]))
-        top = min(l["top"] for l in para_lines)
-        left = min(l["left"] for l in para_lines)
+        top   = min(l["top"] for l in para_lines)
         blocks.append({
-            "text": full_text,
+            "text":       full_text,
             "avg_height": avg_h,
             "word_count": len(full_text.split()),
-            "top": top,
-            "left": left,
-            "page_h": page_h,
+            "top":        top,
+            "page_h":     page_h,
         })
 
     return blocks
 
 
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+
 def _classify_blocks(blocks: list) -> list:
     """
-    Classify blocks as headline, subheadline, or image_caption.
+    Return list of (type, text) for headline / subheadline / image_caption.
+    Body text is skipped.
 
-    Strategy:
-    - Sort blocks top-to-bottom so we process the page in reading order.
-    - Use font height relative to the page maximum to identify large text.
-      * >= 60% of max height → headline
-      * >= 35% of max height → subheadline
-      * Any block immediately below a headline (within 1.5x headline height
-        gap) that is slightly smaller also qualifies as subheadline.
-    - Short blocks (≤20 words) with small font far down the page → image_caption.
-    - Everything else is skipped (body text).
+    Headline     : tallest text on page (>= 50% of max height), short block
+    Subheadline  : first block immediately below a headline (deck text)
+                   OR ALL-CAPS medium-size block (section label / byline header)
+    Image caption: short block (<= 20 words), small font, in lower half of page
+    Everything else is treated as body text and skipped.
     """
     if not blocks:
         return []
@@ -107,94 +188,83 @@ def _classify_blocks(blocks: list) -> list:
     if max_h == 0:
         return []
 
-    # Process in top-to-bottom order
-    ordered = sorted(blocks, key=lambda b: b["top"])
+    HEADLINE_THRESH   = 0.50   # >= 50% of tallest text on page
+    ALLCAPS_THRESH    = 0.22   # ALL-CAPS section headers (medium size)
+    CAPTION_MAX_WORDS = 20
+    CAPTION_H_MAX     = 0.25   # relative to max_h
 
+    ordered = sorted(blocks, key=lambda b: b["top"])
     results = []
     last_headline_bottom = -1
-    last_headline_height = 0
+    last_headline_h      = 0
+    deck_captured        = False   # only first block after headline = deck
 
     for b in ordered:
-        h = b["avg_height"]
-        wc = b["word_count"]
-        relative_h = h / max_h
-        relative_top = b["top"] / b["page_h"] if b["page_h"] else 0
-        gap_from_last_headline = b["top"] - last_headline_bottom
+        h       = b["avg_height"]
+        wc      = b["word_count"]
+        rel_h   = h / max_h
+        rel_top = b["top"] / b["page_h"] if b["page_h"] else 0
+        gap     = b["top"] - last_headline_bottom
 
-        if relative_h >= 0.60 and wc <= 40:
+        # ALL-CAPS test (ignore punctuation and digits)
+        alpha_text = re.sub(r"[^A-Za-z]", "", b["text"])
+        is_allcaps = bool(alpha_text) and alpha_text == alpha_text.upper()
+
+        non_space = len(b["text"].replace(" ", ""))
+        if rel_h >= HEADLINE_THRESH and wc <= 40 and non_space > 12:
             category = "headline"
             last_headline_bottom = b["top"] + int(h)
-            last_headline_height = h
-        elif relative_h >= 0.35 and wc <= 60:
+            last_headline_h      = h
+            deck_captured        = False
+
+        elif (last_headline_h > 0
+              and not deck_captured
+              and gap <= last_headline_h * 3
+              and rel_h >= 0.12
+              and wc <= 120):
+            # First block directly below a headline → deck / subheadline
+            category      = "subheadline"
+            deck_captured = True
+
+        elif is_allcaps and rel_h >= ALLCAPS_THRESH and 1 < wc <= 15 and non_space > 12:
+            # ALL-CAPS medium block → section header / name label
             category = "subheadline"
-        elif (last_headline_height > 0
-              and gap_from_last_headline <= last_headline_height * 1.5
-              and relative_h >= 0.25
-              and wc <= 60):
-            # Directly below a headline → treat as subheadline even if font is smaller
-            category = "subheadline"
-        elif wc <= 20 and relative_h < 0.35 and relative_top > 0.25:
+
+        elif wc <= CAPTION_MAX_WORDS and rel_h <= CAPTION_H_MAX and rel_top > 0.30:
             category = "image_caption"
+
         else:
-            continue  # skip body text
+            continue   # body text — skip
 
         results.append((category, b["text"]))
 
     return results
 
 
-def extract_metadata(image: Image.Image) -> dict:
-    """
-    Heuristically extract newspaper name and date from the first page.
-    The masthead (name) is usually the largest text at the very top.
-    The date is usually a short line near the top containing digits.
-    """
-    print("  Extracting newspaper name and date...")
-    blocks = _get_blocks(image)
-    if not blocks:
-        return {"newspaper_name": "Unknown", "date": "Unknown"}
-
-    # Sort by position — top of page first
-    top_blocks = sorted(blocks, key=lambda b: b["top"])
-
-    # Newspaper name: largest font-size block in the top 20% of the page
-    top_zone = [b for b in top_blocks if b["top"] / image.height < 0.20]
-    if top_zone:
-        name_block = max(top_zone, key=lambda b: b["avg_height"])
-        newspaper_name = name_block["text"]
-    else:
-        newspaper_name = top_blocks[0]["text"] if top_blocks else "Unknown"
-
-    # Date: short block in the top 30% containing a 4-digit year or date pattern
-    import re
-    date = "Unknown"
-    date_zone = [b for b in top_blocks if b["top"] / image.height < 0.30]
-    for b in date_zone:
-        if re.search(r"\b(19|20)\d{2}\b", b["text"]) and b["word_count"] <= 15:
-            date = b["text"]
-            break
-
-    print(f"  Newspaper: {newspaper_name} | Date: {date}")
-    return {"newspaper_name": newspaper_name, "date": date}
-
+# ---------------------------------------------------------------------------
+# Page analysis
+# ---------------------------------------------------------------------------
 
 def analyze_page(image: Image.Image, page_num: int, metadata: dict) -> list:
-    """Classify headline/subheadline/image_caption elements. Returns list of row dicts."""
-    print(f"  Classifying text elements on page {page_num}...")
-    blocks = _get_blocks(image)
+    print(f"  Classifying page {page_num}...")
+    blocks     = _get_blocks(image)
     classified = _classify_blocks(blocks)
 
     rows = []
     for category, text in classified:
         rows.append({
             "newspaper_name": metadata["newspaper_name"],
-            "date": metadata["date"],
-            "type": category,
-            "text": text,
+            "date":           metadata["date"],
+            "type":           category,
+            "text":           text,
         })
-    print(f"    {len(rows)} element(s) extracted.")
+    print(f"    {len(rows)} element(s) found.")
     return rows
 
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
 
 def export_csv(rows: list, path: str) -> None:
     fieldnames = ["newspaper_name", "date", "type", "text"]
@@ -246,41 +316,39 @@ def parse_page_selection(pages_arg: str, total: int) -> list:
     return indices
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze a PDF newspaper with Tesseract OCR and export categorized text."
+        description="Analyze a newspapers.com PDF with Tesseract OCR."
     )
-    parser.add_argument("--pdf", required=True, help="Path to the newspaper PDF file.")
-    parser.add_argument(
-        "--output", default="results",
-        help="Base path for output files (default: results → results.csv / results.xlsx).",
-    )
-    parser.add_argument(
-        "--pages", default="",
-        help="Comma-separated page numbers to analyze, e.g. '1,2,3' (default: all pages).",
-    )
-    parser.add_argument(
-        "--format", choices=["csv", "xlsx", "both"], default="both",
-        help="Export format (default: both).",
-    )
+    parser.add_argument("--pdf",    required=True, help="Path to the newspaper PDF.")
+    parser.add_argument("--output", default="results",
+                        help="Base output path (default: results → results.csv / results.xlsx).")
+    parser.add_argument("--pages",  default="",
+                        help="Comma-separated page numbers (default: all).")
+    parser.add_argument("--format", choices=["csv", "xlsx", "both"], default="both",
+                        help="Export format (default: both).")
     args = parser.parse_args()
 
     if not os.path.isfile(args.pdf):
         sys.exit(f"Error: file not found: {args.pdf}")
 
-    images = pdf_to_images(args.pdf)
+    print("Extracting newspaper name and date...")
+    metadata = extract_metadata_from_pdf(args.pdf)
+    print(f"  Newspaper: {metadata['newspaper_name']} | Date: {metadata['date']}")
+
+    images      = pdf_to_images(args.pdf)
     page_indices = parse_page_selection(args.pages, len(images))
 
     if not page_indices:
         sys.exit("No valid pages to analyze.")
 
-    metadata = extract_metadata(images[page_indices[0]])
-
     all_rows = []
     for idx in page_indices:
-        page_num = idx + 1
-        print(f"\nPage {page_num}/{len(images)}:")
-        rows = analyze_page(images[idx], page_num, metadata)
+        rows = analyze_page(images[idx], idx + 1, metadata)
         all_rows.extend(rows)
 
     print(f"\nTotal elements extracted: {len(all_rows)}")

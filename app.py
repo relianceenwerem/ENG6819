@@ -3,6 +3,7 @@
 Web interface for the Newspaper Analyzer tool.
 Run with: python3 app.py
 Then open http://localhost:5000 in your browser.
+Requires ANTHROPIC_API_KEY environment variable to be set.
 """
 
 import json
@@ -11,11 +12,11 @@ import queue
 import threading
 import uuid
 
+import anthropic
 from flask import Flask, render_template, request, send_from_directory, Response, jsonify
 
 from newspaper_analyzer import (
-    pdf_to_images, extract_metadata_from_pdf, analyze_page,
-    export_results, parse_page_selection,
+    pdf_to_images, analyze_page, export_results, parse_page_selection,
 )
 
 app = Flask(__name__)
@@ -37,6 +38,11 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
         q.put({"type": "log", "message": msg})
 
     try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set on the server.")
+        client = anthropic.Anthropic(api_key=api_key)
+
         all_rows = []
         newspapers_seen = []
 
@@ -44,29 +50,27 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
             filename = os.path.splitext(original_filename)[0] if original_filename else job_id
             log(f"── File {file_num}/{len(pdf_entries)}: {original_filename}")
 
-            log("  Extracting newspaper name and date...")
-            metadata = extract_metadata_from_pdf(pdf_path)
-            log(f"  Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
-            newspapers_seen.append(metadata['newspaper_name'])
-
             log("  Converting PDF to images...")
             images = pdf_to_images(pdf_path)
             log(f"  {len(images)} page(s) found.")
 
             page_indices = parse_page_selection(pages_arg, len(images))
             if not page_indices:
-                log(f"  Warning: no valid pages selected for {original_filename}, skipping.")
+                log(f"  Warning: no valid pages for {original_filename}, skipping.")
                 continue
 
             for idx in page_indices:
                 page_num = idx + 1
-                log(f"  Analysing page {page_num}/{len(images)}...")
-                rows = analyze_page(images[idx], page_num, metadata, filename)
+                log(f"  Analysing page {page_num}/{len(images)} with Claude Vision...")
+                rows = analyze_page(client, images[idx], page_num, filename)
                 all_rows.extend(rows)
-                log(f"    → {len(rows)} element(s) found.")
+                if rows:
+                    newspapers_seen.append(rows[0]["newspaper_name"])
+                img_flag = rows[0]["image_detected"] if rows else "No"
+                log(f"    → {len(rows)} element(s) found. Image detected: {img_flag}")
 
         if not all_rows:
-            raise ValueError("No elements extracted from any of the uploaded files.")
+            raise ValueError("No elements could be extracted from the uploaded files.")
 
         output_base = os.path.join(app.config["OUTPUT_FOLDER"], job_id)
         export_results(all_rows, output_base, fmt)
@@ -112,7 +116,6 @@ def analyze():
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
 
-    # Save all uploaded files and collect (path, original_name) pairs
     pdf_entries = []
     for f in uploaded_files:
         safe_name = f"{job_id}_{len(pdf_entries)}.pdf"
@@ -134,7 +137,6 @@ def analyze():
 
 @app.route("/stream/<job_id>")
 def stream(job_id):
-    """Server-Sent Events endpoint — streams progress logs to the browser."""
     if job_id not in jobs:
         return "Job not found", 404
 

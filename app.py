@@ -14,7 +14,7 @@ import uuid
 from flask import Flask, render_template, request, send_from_directory, Response, jsonify
 
 from newspaper_analyzer import (
-    pdf_to_images, extract_metadata, analyze_page,
+    pdf_to_images, extract_metadata_from_pdf, analyze_page,
     export_results, parse_page_selection,
 )
 
@@ -43,7 +43,7 @@ def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str):
             raise ValueError("No valid pages selected.")
 
         log("Extracting newspaper name and date...")
-        metadata = extract_metadata(images[page_indices[0]])
+        metadata = extract_metadata_from_pdf(pdf_path)
         log(f"Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
 
         all_rows = []

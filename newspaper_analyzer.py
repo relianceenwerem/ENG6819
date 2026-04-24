@@ -24,6 +24,10 @@ except ImportError:
 
 MODEL = "claude-haiku-4-5-20251001"
 
+# Haiku 4.5 pricing (USD per million tokens)
+COST_INPUT_PER_M  = 0.80
+COST_OUTPUT_PER_M = 4.00
+
 ANALYSIS_PROMPT = """\
 Analyze this newspaper page image carefully.
 
@@ -33,8 +37,20 @@ Return ONLY a valid JSON object — no explanation, no markdown fences:
   "date": "publication date exactly as printed on the page",
   "image_detected": true,
   "elements": [
-    {"type": "headline",    "text": "exact headline text"},
-    {"type": "subheadline", "text": "exact subheadline text"}
+    {
+      "type": "headline",
+      "text": "exact headline text",
+      "contains_number": false,
+      "names": ["Full Name"],
+      "locations": ["City", "State"]
+    },
+    {
+      "type": "subheadline",
+      "text": "exact subheadline text",
+      "contains_number": true,
+      "names": [],
+      "locations": ["Illinois"]
+    }
   ]
 }
 
@@ -45,8 +61,17 @@ Rules:
 - elements: ONLY headlines (largest bold text introducing an article) and subheadlines \
 (smaller text immediately below a headline summarising the article). \
 Exclude body text, captions, bylines, page numbers, and advertisements.
+- contains_number: true if the element text contains any digit (0-9), false otherwise
+- names: list of full personal names mentioned in the element text (empty list if none)
+- locations: list of places mentioned (cities, states, countries, regions) \
+in the element text (empty list if none)
 - Preserve exact spelling and punctuation of every text element.
 """
+
+FIELDNAMES = [
+    "filename", "newspaper_name", "date", "content_type", "text",
+    "contains_number", "name_mentioned", "location_mentioned", "image_detected",
+]
 
 
 def pdf_to_images(pdf_path: str) -> list:
@@ -62,9 +87,13 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def compute_cost(input_tokens: int, output_tokens: int) -> float:
+    return (input_tokens * COST_INPUT_PER_M + output_tokens * COST_OUTPUT_PER_M) / 1_000_000
+
+
 def analyze_page(client: anthropic.Anthropic, image: Image.Image,
-                 page_num: int, filename: str) -> list:
-    """Send one page to Claude Vision and return structured rows."""
+                 page_num: int, filename: str) -> tuple:
+    """Send one page to Claude Vision and return (rows, usage_dict)."""
     print(f"  Analysing page {page_num} with Claude Vision...")
     image_b64 = image_to_base64(image)
 
@@ -87,13 +116,18 @@ def analyze_page(client: anthropic.Anthropic, image: Image.Image,
         }],
     )
 
+    input_tokens  = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    cost          = compute_cost(input_tokens, output_tokens)
+    usage = {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost}
+
     raw = response.content[0].text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         print(f"  Warning: could not parse Claude response for page {page_num} — skipping.")
-        return []
+        return [], usage
 
     newspaper_name = data.get("newspaper_name", "Unknown")
     date           = data.get("date", "Unknown")
@@ -110,23 +144,30 @@ def analyze_page(client: anthropic.Anthropic, image: Image.Image,
         text = el.get("text", "").strip()
         if not text:
             continue
+
+        names     = el.get("names", [])
+        locations = el.get("locations", [])
+
         rows.append({
-            "filename":       filename,
-            "newspaper_name": newspaper_name,
-            "date":           date,
-            "content_type":   content_type,
-            "text":           text,
-            "image_detected": image_detected,
+            "filename":          filename,
+            "newspaper_name":    newspaper_name,
+            "date":              date,
+            "content_type":      content_type,
+            "text":              text,
+            "contains_number":   "Yes" if el.get("contains_number", False) else "No",
+            "name_mentioned":    "; ".join(n for n in names     if isinstance(n, str) and n.strip()),
+            "location_mentioned": "; ".join(l for l in locations if isinstance(l, str) and l.strip()),
+            "image_detected":    image_detected,
         })
 
-    print(f"    {len(rows)} element(s) found. Image detected: {image_detected}")
-    return rows
+    print(f"    {len(rows)} element(s) found. Image detected: {image_detected}. "
+          f"Cost: ${cost:.4f} ({input_tokens}in/{output_tokens}out tokens)")
+    return rows, usage
 
 
 def export_csv(rows: list, path: str) -> None:
-    fieldnames = ["filename", "newspaper_name", "date", "content_type", "text", "image_detected"]
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
     print(f"CSV saved: {path}")
@@ -139,10 +180,9 @@ def export_xlsx(rows: list, path: str) -> None:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Newspaper Analysis"
-    headers = ["filename", "newspaper_name", "date", "content_type", "text", "image_detected"]
-    ws.append(headers)
+    ws.append(FIELDNAMES)
     for row in rows:
-        ws.append([row[h] for h in headers])
+        ws.append([row[h] for h in FIELDNAMES])
     for col in ws.columns:
         max_len = max(len(str(cell.value or "")) for cell in col)
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 80)
@@ -201,12 +241,15 @@ def main():
     if not indices:
         sys.exit("No valid pages to analyze.")
 
-    all_rows = []
+    all_rows   = []
+    total_cost = 0.0
     for idx in indices:
-        rows = analyze_page(client, images[idx], idx + 1, filename)
+        rows, usage = analyze_page(client, images[idx], idx + 1, filename)
         all_rows.extend(rows)
+        total_cost += usage["cost_usd"]
 
     print(f"\nTotal elements extracted: {len(all_rows)}")
+    print(f"Total API cost: ${total_cost:.4f}")
     export_results(all_rows, args.output, args.format)
     print("Done.")
 

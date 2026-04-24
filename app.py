@@ -43,8 +43,11 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
             raise ValueError("ANTHROPIC_API_KEY is not set on the server.")
         client = anthropic.Anthropic(api_key=api_key)
 
-        all_rows = []
+        all_rows        = []
         newspapers_seen = []
+        total_cost      = 0.0
+        total_in_tokens = 0
+        total_out_tokens = 0
 
         for file_num, (pdf_path, original_filename) in enumerate(pdf_entries, 1):
             filename = os.path.splitext(original_filename)[0] if original_filename else job_id
@@ -62,12 +65,16 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
             for idx in page_indices:
                 page_num = idx + 1
                 log(f"  Analysing page {page_num}/{len(images)} with Claude Vision...")
-                rows = analyze_page(client, images[idx], page_num, filename)
+                rows, usage = analyze_page(client, images[idx], page_num, filename)
                 all_rows.extend(rows)
+                total_cost       += usage["cost_usd"]
+                total_in_tokens  += usage["input_tokens"]
+                total_out_tokens += usage["output_tokens"]
                 if rows:
                     newspapers_seen.append(rows[0]["newspaper_name"])
                 img_flag = rows[0]["image_detected"] if rows else "No"
-                log(f"    → {len(rows)} element(s) found. Image detected: {img_flag}")
+                log(f"    → {len(rows)} element(s) found. Image detected: {img_flag}. "
+                    f"Page cost: ${usage['cost_usd']:.4f}")
 
         if not all_rows:
             raise ValueError("No elements could be extracted from the uploaded files.")
@@ -82,9 +89,12 @@ def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
             files.append({"name": "results.xlsx", "url": f"/download/{job_id}/results.xlsx"})
 
         summary = ", ".join(dict.fromkeys(newspapers_seen)) or "Unknown"
-        log(f"Done! {len(all_rows)} total elements from {len(pdf_entries)} file(s).")
+        log(f"Done! {len(all_rows)} total elements from {len(pdf_entries)} file(s). "
+            f"Total cost: ${total_cost:.4f} ({total_in_tokens} in / {total_out_tokens} out tokens)")
         q.put({"type": "done", "files": files, "total": len(all_rows),
-               "newspaper": summary, "date": f"{len(pdf_entries)} file(s) processed"})
+               "newspaper": summary, "date": f"{len(pdf_entries)} file(s) processed",
+               "cost": f"${total_cost:.4f}",
+               "tokens": f"{total_in_tokens:,} in / {total_out_tokens:,} out"})
 
     except Exception as exc:
         q.put({"type": "error", "message": str(exc)})

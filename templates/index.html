@@ -191,12 +191,12 @@
     <form id="analyzeForm">
 
       <div class="field">
-        <label>Newspaper PDF</label>
+        <label>Newspaper PDFs</label>
         <div class="upload-area" id="dropZone">
-          <input type="file" name="pdf" accept=".pdf" id="pdfInput" />
+          <input type="file" name="pdf" accept=".pdf" id="pdfInput" multiple />
           <div class="upload-icon">📰</div>
           <p><strong>Click to upload</strong> or drag and drop</p>
-          <p>PDF files only · Max 100 MB</p>
+          <p>PDF files only · Max 100 MB each · Multiple files supported</p>
           <div id="file-name"></div>
         </div>
       </div>
@@ -236,17 +236,24 @@
   const dropZone = document.getElementById('dropZone');
   const fileName = document.getElementById('file-name');
 
-  pdfInput.addEventListener('change', () => {
-    fileName.textContent = pdfInput.files[0]?.name || '';
-  });
+  function showFileNames(files) {
+    if (!files || files.length === 0) { fileName.textContent = ''; return; }
+    if (files.length === 1) {
+      fileName.textContent = files[0].name;
+    } else {
+      fileName.textContent = `${files.length} files selected: ${Array.from(files).map(f => f.name).join(', ')}`;
+    }
+  }
+
+  pdfInput.addEventListener('change', () => showFileNames(pdfInput.files));
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag');
-    if (e.dataTransfer.files[0]) {
+    if (e.dataTransfer.files.length) {
       pdfInput.files = e.dataTransfer.files;
-      fileName.textContent = e.dataTransfer.files[0].name;
+      showFileNames(e.dataTransfer.files);
     }
   });
 
@@ -258,7 +265,7 @@
     const resultsPanel = document.getElementById('results-panel');
     const logBox = document.getElementById('log-box');
 
-    if (!form.pdf.files[0]) { alert('Please select a PDF file.'); return; }
+    if (!form.pdf.files.length) { alert('Please select at least one PDF file.'); return; }
 
     btn.disabled = true;
     btn.textContent = 'Uploading...';

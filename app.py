@@ -26,34 +26,47 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 jobs = {}
 
 
-def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str, original_filename: str = ""):
-    """Run the full analysis in a background thread, posting progress updates."""
+def run_analysis(job_id: str, pdf_entries: list, pages_arg: str, fmt: str):
+    """
+    Run analysis on one or more PDFs in a background thread.
+    pdf_entries: list of (pdf_path, original_filename)
+    """
     q = jobs[job_id]["queue"]
 
     def log(msg):
         q.put({"type": "log", "message": msg})
 
     try:
-        log("Converting PDF to images...")
-        images = pdf_to_images(pdf_path)
-        log(f"Found {len(images)} page(s).")
-
-        page_indices = parse_page_selection(pages_arg, len(images))
-        if not page_indices:
-            raise ValueError("No valid pages selected.")
-
-        log("Extracting newspaper name and date...")
-        metadata = extract_metadata_from_pdf(pdf_path)
-        log(f"Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
-
-        filename = os.path.splitext(original_filename)[0] if original_filename else job_id
         all_rows = []
-        for idx in page_indices:
-            page_num = idx + 1
-            log(f"Analysing page {page_num} of {len(images)}...")
-            rows = analyze_page(images[idx], page_num, metadata, filename)
-            all_rows.extend(rows)
-            log(f"  → {len(rows)} element(s) found on page {page_num}.")
+        newspapers_seen = []
+
+        for file_num, (pdf_path, original_filename) in enumerate(pdf_entries, 1):
+            filename = os.path.splitext(original_filename)[0] if original_filename else job_id
+            log(f"── File {file_num}/{len(pdf_entries)}: {original_filename}")
+
+            log("  Extracting newspaper name and date...")
+            metadata = extract_metadata_from_pdf(pdf_path)
+            log(f"  Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
+            newspapers_seen.append(metadata['newspaper_name'])
+
+            log("  Converting PDF to images...")
+            images = pdf_to_images(pdf_path)
+            log(f"  {len(images)} page(s) found.")
+
+            page_indices = parse_page_selection(pages_arg, len(images))
+            if not page_indices:
+                log(f"  Warning: no valid pages selected for {original_filename}, skipping.")
+                continue
+
+            for idx in page_indices:
+                page_num = idx + 1
+                log(f"  Analysing page {page_num}/{len(images)}...")
+                rows = analyze_page(images[idx], page_num, metadata, filename)
+                all_rows.extend(rows)
+                log(f"    → {len(rows)} element(s) found.")
+
+        if not all_rows:
+            raise ValueError("No elements extracted from any of the uploaded files.")
 
         output_base = os.path.join(app.config["OUTPUT_FOLDER"], job_id)
         export_results(all_rows, output_base, fmt)
@@ -64,9 +77,10 @@ def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str, original_
         if fmt in ("xlsx", "both") and os.path.exists(output_base + ".xlsx"):
             files.append({"name": "results.xlsx", "url": f"/download/{job_id}/results.xlsx"})
 
-        log(f"Done! {len(all_rows)} total elements extracted.")
+        summary = ", ".join(dict.fromkeys(newspapers_seen)) or "Unknown"
+        log(f"Done! {len(all_rows)} total elements from {len(pdf_entries)} file(s).")
         q.put({"type": "done", "files": files, "total": len(all_rows),
-               "newspaper": metadata["newspaper_name"], "date": metadata["date"]})
+               "newspaper": summary, "date": f"{len(pdf_entries)} file(s) processed"})
 
     except Exception as exc:
         q.put({"type": "error", "message": str(exc)})
@@ -81,12 +95,15 @@ def index():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    if "pdf" not in request.files or request.files["pdf"].filename == "":
-        return jsonify({"error": "No PDF file uploaded."}), 400
+    uploaded_files = request.files.getlist("pdf")
+    uploaded_files = [f for f in uploaded_files if f.filename]
 
-    pdf_file = request.files["pdf"]
-    if not pdf_file.filename.lower().endswith(".pdf"):
-        return jsonify({"error": "Only PDF files are supported."}), 400
+    if not uploaded_files:
+        return jsonify({"error": "No PDF files uploaded."}), 400
+
+    invalid = [f.filename for f in uploaded_files if not f.filename.lower().endswith(".pdf")]
+    if invalid:
+        return jsonify({"error": f"Only PDF files are supported. Invalid: {', '.join(invalid)}"}), 400
 
     pages_arg = request.form.get("pages", "").strip()
     fmt = request.form.get("format", "both")
@@ -95,19 +112,24 @@ def analyze():
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
 
-    pdf_path = os.path.join(app.config["UPLOAD_FOLDER"], f"{job_id}.pdf")
-    pdf_file.save(pdf_path)
+    # Save all uploaded files and collect (path, original_name) pairs
+    pdf_entries = []
+    for f in uploaded_files:
+        safe_name = f"{job_id}_{len(pdf_entries)}.pdf"
+        pdf_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
+        f.save(pdf_path)
+        pdf_entries.append((pdf_path, f.filename))
 
     jobs[job_id] = {"queue": queue.Queue(), "finished": False}
 
     thread = threading.Thread(
         target=run_analysis,
-        args=(job_id, pdf_path, pages_arg, fmt, pdf_file.filename),
+        args=(job_id, pdf_entries, pages_arg, fmt),
         daemon=True,
     )
     thread.start()
 
-    return jsonify({"job_id": job_id})
+    return jsonify({"job_id": job_id, "file_count": len(pdf_entries)})
 
 
 @app.route("/stream/<job_id>")

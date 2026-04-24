@@ -26,7 +26,7 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 jobs = {}
 
 
-def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str):
+def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str, original_filename: str = ""):
     """Run the full analysis in a background thread, posting progress updates."""
     q = jobs[job_id]["queue"]
 
@@ -46,11 +46,12 @@ def run_analysis(job_id: str, pdf_path: str, pages_arg: str, fmt: str):
         metadata = extract_metadata_from_pdf(pdf_path)
         log(f"Newspaper: {metadata['newspaper_name']}  |  Date: {metadata['date']}")
 
+        filename = os.path.splitext(original_filename)[0] if original_filename else job_id
         all_rows = []
         for idx in page_indices:
             page_num = idx + 1
             log(f"Analysing page {page_num} of {len(images)}...")
-            rows = analyze_page(images[idx], page_num, metadata)
+            rows = analyze_page(images[idx], page_num, metadata, filename)
             all_rows.extend(rows)
             log(f"  → {len(rows)} element(s) found on page {page_num}.")
 
@@ -101,7 +102,7 @@ def analyze():
 
     thread = threading.Thread(
         target=run_analysis,
-        args=(job_id, pdf_path, pages_arg, fmt),
+        args=(job_id, pdf_path, pages_arg, fmt, pdf_file.filename),
         daemon=True,
     )
     thread.start()
